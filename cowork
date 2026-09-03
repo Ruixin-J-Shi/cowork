@@ -15,7 +15,9 @@
 #       Run the same-named bin script of the project found by walking up from $PWD (or $COWORK_PROJECT); --node targets a nested team.
 #   cowork prompts [<node-path>]                 print the boot prompts (rendered for that node when inside a project)
 set -u
-KIT="$(cd "$(dirname "$0")" && pwd)"
+SELF="$0"   # follow symlinks (e.g. /usr/local/bin/cowork -> <clone>/cowork) so KIT is the clone, wherever it lives
+while [ -L "$SELF" ]; do t="$(readlink "$SELF")"; case "$t" in /*) SELF="$t";; *) SELF="$(dirname "$SELF")/$t";; esac; done
+KIT="$(cd "$(dirname "$SELF")" && pwd)"
 die() { echo "cowork: $*" >&2; exit 1; }
 usage() { awk 'NR>1 && !/^#/ {exit} NR>1 {print}' "$0"; }
 

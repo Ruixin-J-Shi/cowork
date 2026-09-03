@@ -11,9 +11,12 @@ This kit is the protocol distilled from a real three-day, four-session build (se
 `LESSONS.md`), packaged so the next project starts with it in one command.
 
 ```
-~/Desktop/cowork/cowork init ~/code/myproject --seats 3 --territories "src:tests"      # one team
-~/Desktop/cowork/cowork init ~/code/myproject --layers 3,2 --territories "src:tests"     # 3 nodes × 2 seats
+git clone https://github.com/Ruixin-J-Shi/cowork.git && cd cowork        # any location works
+./cowork init ~/code/myproject --seats 3 --territories "src:tests"        # one team
+./cowork init ~/code/myproject --layers 3,2 --territories "src:tests"     # 3 nodes × 2 seats
 ```
+
+Put `cowork` on your PATH (`QUICKSTART.md` §0) and drop the `./`; the kit resolves its own location.
 
 That copies a **self-contained** `coordination/` into the project — scripts, protocol, lead playbook —
 plus a `PLAN.md` and `CONVENTIONS.md` if absent. The project never depends on this kit again.
@@ -50,7 +53,7 @@ plus a `PLAN.md` and `CONVENTIONS.md` if absent. The project never depends on th
 | `templates/coordination/` | what `init` copies: `PROTOCOL.md` (seats), `LEAD.md` (lead), `bin/*.sh`, `hooks/ntfy-hook.sh`, `cowork.conf`, `registry.md` |
 | `templates/project/` | `PLAN.md`, `CONVENTIONS.md`, `.gitignore` lines seeded into the project root |
 | `prompts/` | the exact text to paste into a lead / seat / resuming-lead / standby-lead session (copied into `coordination/prompts/` by `init`) |
-| `skill/` | a Claude Code skill (`/cowork …`) — optional; `ln -s ~/Desktop/cowork/skill ~/.claude/skills/cowork` |
+| `skill/` | a Claude Code skill (`/cowork …`) — optional; from the clone: `ln -s "$PWD/skill" ~/.claude/skills/cowork` |
 | `examples/clawllege/` | verbatim excerpts from the original run, one mechanism each |
 | `LESSONS.md` | what the original run taught, incident by incident, and the rule each produced |
 | `ARCHITECTURE.md` | why files rather than an MCP server or A2A, when to add each, and a verified survey of existing projects |
@@ -75,3 +78,7 @@ plus a `PLAN.md` and `CONVENTIONS.md` if absent. The project never depends on th
 | `doctor.sh` | anyone | structure, config, stale locks, gitignore coverage, hooks |
 
 Body text for `dispatch.sh` / `report.sh` is always explicit: `-m "text"`, `-f file`, or `-` with a heredoc.
+
+## License
+
+MIT — see `LICENSE`.

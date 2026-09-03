@@ -6,13 +6,19 @@ disable-model-invocation: true
 
 # /cowork
 
-Kit root: `~/Desktop/cowork`. A project is "initialised" when it has `coordination/bin/common.sh`.
+Kit root: resolve it first, once, and use it in every command below:
 
-Parse the argument and take the matching branch (`init`, `lead`, `seat`, `node`, `standby`, `grow`, `tree`, `status`, `doctor`, `resume`). With no argument, run `bash ~/Desktop/cowork/cowork --help` and show the output.
+```bash
+KIT="${COWORK_KIT:-$(cd "$(dirname "$(readlink -f ~/.claude/skills/cowork/SKILL.md)")/.." && pwd)}"
+```
+
+That follows the symlink `QUICKSTART.md` §0 creates back to the clone. If `$KIT/cowork` does not exist, ask the human where the kit is cloned (or for `COWORK_KIT`). A project is "initialised" when it has `coordination/bin/common.sh`.
+
+Parse the argument and take the matching branch (`init`, `lead`, `seat`, `node`, `standby`, `grow`, `tree`, `status`, `doctor`, `resume`). With no argument, run `bash "$KIT/cowork" --help` and show the output.
 
 ## `init [--seats N | --layers 3,2] [--project NAME] [--territories "a:b"]`
 
-Run `bash ~/Desktop/cowork/cowork init "$PWD" <the given options>`. Then open `PLAN.md` and fill the ownership map and shared-resource partition from what you know of the project (ask for what you cannot infer). Done when `bash coordination/bin/doctor.sh` prints `healthy`.
+Run `bash "$KIT/cowork" init "$PWD" <the given options>`. Then open `PLAN.md` and fill the ownership map and shared-resource partition from what you know of the project (ask for what you cannot infer). Done when `bash coordination/bin/doctor.sh` prints `healthy`.
 
 ## `lead`
 
@@ -32,11 +38,11 @@ Read `coordination/teams/<path>/prompts/node-boot.md` and follow it exactly: you
 
 ## `grow <path> [--seats N]` · `tree`
 
-Run `bash ~/Desktop/cowork/cowork grow <path> …` / `bash ~/Desktop/cowork/cowork tree` from the project and report the output.
+Run `bash "$KIT/cowork" grow <path> …` / `bash "$KIT/cowork" tree` from the project and report the output.
 
 ## `status [<node-path>]` · `doctor [<node-path>]` · `tree`
 
-Run `bash ~/Desktop/cowork/cowork [--node <path>] status` / `doctor`, or `cowork tree` for every node, and report the output verbatim, then say in one line what needs the human (a dead slot, a stall, a structural FAIL).
+Run `bash "$KIT/cowork" [--node <path>] status` / `doctor`, or `bash "$KIT/cowork" tree` for every node, and report the output verbatim, then say in one line what needs the human (a dead slot, a stall, a structural FAIL).
 
 ## `resume [<node-path>]`
 

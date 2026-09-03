@@ -4,10 +4,13 @@ Time: about ten minutes, most of it writing `PLAN.md`.
 
 ## 0. Once per machine (optional)
 
+Clone the kit anywhere; nothing in it depends on where it lives.
+
 ```bash
-ln -s ~/Desktop/cowork/cowork /usr/local/bin/cowork        # or add ~/Desktop/cowork to PATH
-ln -s ~/Desktop/cowork/skill ~/.claude/skills/cowork       # enables /cowork in Claude Code
-bash ~/Desktop/cowork/tests/smoke.sh                       # 144 checks; proves the scripts work here
+git clone https://github.com/Ruixin-J-Shi/cowork.git && cd cowork
+ln -s "$PWD/cowork" /usr/local/bin/cowork     # or any directory on your PATH
+ln -s "$PWD/skill" ~/.claude/skills/cowork    # enables /cowork in Claude Code
+bash tests/smoke.sh                           # 144 checks; proves the scripts work here
 ```
 
 Phone notifications (optional): `brew install ntfy`, then follow the header of
