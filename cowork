@@ -1,0 +1,190 @@
+#!/usr/bin/env bash
+# cowork — lead/seat coordination for parallel Claude Code sessions, driven by files. Recursive: every
+# session is a NODE — seat-N of the team above, lead of the team below — to any depth.
+#
+#   cowork init <project-dir> [--layers 3,2 | --seats N] [--project NAME] [--territories "src:tests"] [--yes]
+#       Scaffold a self-contained coordination/ tree into a project (+ PLAN.md / CONVENTIONS.md if absent, .gitignore lines).
+#       --layers 3,2 = the root has 3 seats, each of which is a node with 2 seats (add more numbers for more depth).
+#       The project never depends on this kit afterwards; everything it needs is copied in.
+#   cowork grow <node-path> [--seats N]        e.g. `cowork grow seat-2` or `cowork grow seat-2/seat-1`
+#       Turn a leaf slot into a node by scaffolding a team under it (coordination/teams/seat-2/...).
+#   cowork tree                                  every node with its lead and slot liveness
+#   cowork update <project-dir>                  refresh bin/, hooks/, prompts/, LEAD.md, LESSONS.md, TREE.md in every
+#                                                node; never touches inbox/outbox/locks/PROTOCOL.md/cowork.conf.
+#   cowork [--node seat-2/seat-1] status | doctor | dispatch | report | claim | inbox | watch | lead-watch | lead | node  [args...]
+#       Run the same-named bin script of the project found by walking up from $PWD (or $COWORK_PROJECT); --node targets a nested team.
+#   cowork prompts [<node-path>]                 print the boot prompts (rendered for that node when inside a project)
+set -u
+KIT="$(cd "$(dirname "$0")" && pwd)"
+die() { echo "cowork: $*" >&2; exit 1; }
+usage() { awk 'NR>1 && !/^#/ {exit} NR>1 {print}' "$0"; }
+
+find_coord() { # walk up from a dir to find coordination/bin/common.sh
+  local d="${1:-$PWD}"; d="$(cd "$d" 2>/dev/null && pwd)" || return 1
+  while [ "$d" != / ]; do [ -f "$d/coordination/bin/common.sh" ] && { echo "$d/coordination"; return 0; }; d="$(dirname "$d")"; done
+  return 1
+}
+
+sed_esc() { printf '%s' "$1" | sed -e 's/[\\&|]/\\&/g'; }
+render() { # file  (in place: @@ROOT@@ @@PROJECT@@ @@SEATS@@ @@TERRITORIES@@ @@C@@ @@TOP@@ @@UP_C@@ @@UP_SLOT@@ @@DATE@@)
+  local f="$1" tmp="$1.tmp.$$"
+  sed -e "s|@@ROOT@@|$(sed_esc "$ROOT")|g" -e "s|@@PROJECT@@|$(sed_esc "$PROJECT")|g" -e "s|@@SEATS@@|$(sed_esc "$SEATS")|g" \
+      -e "s|@@TERRITORIES@@|$(sed_esc "$TERRITORIES")|g" -e "s|@@C@@|$(sed_esc "${C_REL:-coordination}")|g" -e "s|@@TOP@@|coordination|g" \
+      -e "s|@@UP_C@@|$(sed_esc "${UP_C_REL:-}")|g" -e "s|@@UP_SLOT@@|$(sed_esc "${UP_SLOT:-}")|g" -e "s|@@DATE@@|$(date '+%Y-%m-%d')|g" "$f" > "$tmp" && mv "$tmp" "$f" || die "template render failed for $f"
+}
+check_territories() { # every entry must resolve inside ROOT (or not exist yet)
+  local p rp; printf '%s\n' "$TERRITORIES" | { case "$TERRITORIES" in *:*) tr ':' '\n';; *) tr ' ' '\n';; esac; } | while IFS= read -r p; do
+    [ -n "$p" ] || continue; [ -e "$ROOT/$p" ] || continue
+    rp="$(cd "$ROOT/$p" 2>/dev/null && pwd -P)"; case "$rp" in "$ROOTP"|"$ROOTP"/*) ;; *) echo "cowork: territory '$p' resolves outside the project ($rp)" >&2; exit 1;; esac
+  done
+}
+node_dir() { # "root" | "seat-2/seat-1" -> absolute coordination dir (under $ROOT)
+  local p="${1:-root}" d="$ROOT/coordination" seg
+  [ "$p" = root ] || [ -z "$p" ] || for seg in $(printf '%s' "$p" | tr '/' ' '); do
+    case "$seg" in seat-[0-9]*) ;; *) die "bad node path '$1' (segments look like seat-N)";; esac; d="$d/teams/$seg"; done
+  echo "$d"
+}
+# Scaffold ONE team dir. Args: dir  seats  c_rel  up_c_rel  up_slot
+scaffold_team() {
+  local C="$1"; SEATS="$2"; C_REL="$3"; UP_C_REL="$4"; UP_SLOT="$5"
+  [ -e "$C" ] && die "$C already exists"
+  mkdir -p "$(dirname "$C")"; cp -R "$KIT/templates/coordination" "$C"
+  [ -f "$KIT/LESSONS.md" ] && cp "$KIT/LESSONS.md" "$C/LESSONS.md"; [ -f "$KIT/TREE.md" ] && cp "$KIT/TREE.md" "$C/TREE.md"
+  mkdir -p "$C/prompts" && cp "$KIT"/prompts/*.md "$C/prompts/"
+  # kit-owned copies just written, never user data: a nested team gets the node-* prompts, the top the lead-* ones
+  if [ -n "$UP_SLOT" ]; then rm -f -- "$C/prompts/lead-boot.md" "$C/prompts/lead-standby.md" "$C/prompts/lead-resume.md"
+    cp "$KIT/templates/project/PLAN.md" "$C/PLAN.md"; render "$C/PLAN.md"   # the node's own plan: partitions its territory among its seats
+  else rm -f -- "$C/prompts/node-boot.md" "$C/prompts/node-standby.md" "$C/prompts/node-resume.md"; fi
+  local f; for f in PROTOCOL.md LEAD.md cowork.conf registry.md; do [ -f "$C/$f" ] && render "$C/$f"; done
+  for f in "$C"/prompts/*.md; do [ -f "$f" ] && render "$f"; done   # absolute: a relative glob would expand against the caller's cwd
+  local n=1; while [ "$n" -le "$SEATS" ]; do
+    printf '# Inbox — seat-%s (written by LEAD only)\n\nSTATUS: ACTIVE\n' "$n" > "$C/inbox/seat-$n.md"
+    printf '# Outbox — seat-%s (written by seat-%s only; append-only)\n' "$n" "$n" > "$C/outbox/seat-$n.md"
+    n=$((n + 1)); done
+  chmod +x "$C"/bin/*.sh "$C"/hooks/*.sh
+}
+# Scaffold a subtree: layers "3,2" under dir C (already scaffolded with layers' first number of seats)
+scaffold_layers() { # C c_rel rest_layers
+  local C="$1" c_rel="$2" rest="$3" n w first tail
+  [ -n "$rest" ] || return 0
+  first="${rest%%,*}"; [ "$first" = "$rest" ] && tail="" || tail="${rest#*,}"
+  case "$first" in ''|*[!0-9]*) die "--layers: '$first' is not a number";; esac
+  w="$(grep -E '^SEATS=' "$C/cowork.conf" | head -1 | sed -E 's/^SEATS=([0-9]+).*/\1/')"
+  n=1; while [ "$n" -le "$w" ]; do
+    scaffold_team "$C/teams/seat-$n" "$first" "$c_rel/teams/seat-$n" "$c_rel" "seat-$n"
+    scaffold_layers "$C/teams/seat-$n" "$c_rel/teams/seat-$n" "$tail"
+    n=$((n + 1)); done
+}
+all_nodes() { # print every coordination dir under the top, depth-first, as "path|dir"
+  local d="$1" p="${2:-root}" t b
+  echo "$p|$d"
+  [ -d "$d/teams" ] && for t in "$d"/teams/seat-*/; do
+    t="${t%/}"; b="$(basename "$t")"; case "${b#seat-}" in ''|*[!0-9]*) continue;; esac
+    [ -d "$t/bin" ] && all_nodes "$t" "$( [ "$p" = root ] && echo "$b" || echo "$p/$b" )"; done
+  return 0
+}
+
+cmd_init() {
+  [ $# -ge 1 ] || die "init needs a project directory"
+  local target="$1"; shift
+  local LAYERS="3"; PROJECT=""; TERRITORIES="src tests"; YES=""
+  while [ $# -gt 0 ]; do case "$1" in
+    --seats) LAYERS="$2"; shift 2;; --layers) LAYERS="$2"; shift 2;; --project) PROJECT="$2"; shift 2;;
+    --territories) TERRITORIES="$2"; shift 2;; --yes|-y) YES=1; shift;;
+    *) die "unknown init option: $1";; esac; done
+  case "$LAYERS" in ''|*[!0-9,]*|,*|*,|*,,*) die "--layers must look like 3 or 3,2 or 2,3,2";; esac
+  local top="${LAYERS%%,*}" rest=""; [ "$top" = "$LAYERS" ] || rest="${LAYERS#*,}"
+  mkdir -p "$target"; ROOT="$(cd "$target" && pwd)"; ROOTP="$(cd "$ROOT" && pwd -P)"; [ -n "$PROJECT" ] || PROJECT="$(basename "$ROOT")"
+  [ -e "$ROOT/coordination" ] && die "$ROOT/coordination already exists — use 'cowork update' to refresh scripts, 'cowork grow' to add teams, or choose another directory"
+  check_territories || exit 1
+  echo "cowork init → $ROOT  (project=$PROJECT, layers=$LAYERS, territories=\"$TERRITORIES\")"
+  scaffold_team "$ROOT/coordination" "$top" "coordination" "" ""
+  scaffold_layers "$ROOT/coordination" "coordination" "$rest"
+  for f in PLAN.md CONVENTIONS.md; do
+    if [ -f "$ROOT/$f" ]; then echo "  keep   $f (exists)"; else cp "$KIT/templates/project/$f" "$ROOT/$f"; SEATS="$top" C_REL=coordination render "$ROOT/$f"; echo "  create $f"; fi; done
+  if [ -f "$ROOT/.gitignore" ] && grep -q 'coordination/\*\*/locks' "$ROOT/.gitignore"; then echo "  keep   .gitignore (already covers coordination locks)"
+  else cat "$KIT/templates/project/gitignore-snippet" >> "$ROOT/.gitignore"; echo "  append .gitignore (locks and trash at every depth stay out of history)"; fi
+  local count; count="$(all_nodes "$ROOT/coordination" | wc -l | tr -d ' ')"
+  echo "  create coordination/ tree: $count node(s), layers $LAYERS (each node: PROTOCOL.md, LEAD.md, prompts/, bin/, inbox+outbox pairs; nested nodes also a PLAN.md stub)"
+  [ -n "$rest" ] && echo "  note: every nested team's TERRITORIES= starts as a copy of the top's — scope each in its cowork.conf to what that node owns"
+  echo
+  echo "next:"
+  echo "  1. edit $ROOT/PLAN.md (goal, locked decisions, ownership map per node) — the root reads it first"
+  echo "  2. root:   cd $ROOT && claude   then paste  coordination/prompts/lead-boot.md"
+  if [ -n "$rest" ]; then
+  echo "  3. each node:    cd $ROOT && claude   then paste  coordination/teams/seat-N/prompts/node-boot.md   (one session per node)"
+  echo "  4. leaf seats: cd $ROOT && claude   then paste  <that team dir>/prompts/seat-boot.md"
+  else
+  echo "  3. seats:      cd $ROOT && claude   then paste  coordination/prompts/seat-boot.md   (one per seat, up to $top)"
+  fi
+  echo "  watch: cowork tree   ·   grow later: cowork grow seat-N --seats M"
+}
+
+cmd_grow() {
+  [ $# -ge 1 ] || die "grow needs a node path (seat-2, or seat-2/seat-1)"
+  local path="$1"; shift; local W=2
+  while [ $# -gt 0 ]; do case "$1" in --seats) W="$2"; shift 2;; *) die "unknown grow option: $1";; esac; done
+  case "$W" in ''|*[!0-9]*) die "--seats must be a number";; esac
+  local TOPC; TOPC="$(find_coord "${COWORK_PROJECT:-$PWD}")" || die "no coordination/ found at or above ${COWORK_PROJECT:-$PWD}"
+  ROOT="$(dirname "$TOPC")"; PROJECT="$(basename "$ROOT")"; TERRITORIES=""
+  local parent="${path%/*}" slot="${path##*/}"; [ "$parent" = "$path" ] && parent=root
+  local PD; PD="$(node_dir "$parent")" || exit 1; [ -d "$PD/bin" ] || die "parent node '$parent' does not exist ($PD)"
+  [ -f "$PD/inbox/$slot.md" ] || die "$parent has no slot $slot (its SEATS is smaller) — raise SEATS in $PD/cowork.conf and add the inbox/outbox pair first"
+  local C="$PD/teams/$slot" prel; prel="${PD#$ROOT/}"
+  # shellcheck disable=SC1091
+  ( . "$PD/cowork.conf" 2>/dev/null; printf '%s' "${TERRITORIES:-}" ) >/dev/null
+  scaffold_team "$C" "$W" "$prel/teams/$slot" "$prel" "$slot"
+  echo "grew node $path: $C ($W seats). Boot it with $C/prompts/node-boot.md; its seats with $C/prompts/seat-boot.md."
+  echo "Then: scope TERRITORIES= in $C/cowork.conf to what this node owns (it starts as a copy of its parent's), set TERRITORY_N/LABEL_N there, LABEL for $slot in $PD/cowork.conf, and write $C/PLAN.md's ownership map."
+}
+
+cmd_tree() {
+  local TOPC; TOPC="$(find_coord "${COWORK_PROJECT:-$PWD}")" || die "no coordination/ found at or above ${COWORK_PROJECT:-$PWD}"
+  all_nodes "$TOPC" | while IFS='|' read -r p d; do
+    depth="$(printf '%s' "$p" | awk -F/ '{print ($0=="root")?0:NF}')"; ind="$(printf '%*s' $((depth*2)) '')"
+    echo "${ind}$p  [$(bash "$d/bin/lead.sh" status 2>/dev/null | sed 's/^lead: //')]"
+    bash "$d/bin/status.sh" 2>/dev/null | awk -v ind="$ind  " 'f && /^seat-/ {print ind $0} /^slot /{f=1}'
+  done
+}
+
+cmd_update() {
+  [ $# -ge 1 ] || die "update needs a project directory"
+  local TOPC; TOPC="$(find_coord "$1")" || die "no coordination/ found at or above $1"
+  ROOT="$(dirname "$TOPC")"; ROOTP="$(cd "$ROOT" && pwd -P)"
+  all_nodes "$TOPC" | while IFS='|' read -r p C; do
+    PROJECT="$(basename "$ROOT")"; SEATS=3; TERRITORIES=""; PROJECT_NAME=""
+    # shellcheck disable=SC1091
+    [ -f "$C/cowork.conf" ] && . "$C/cowork.conf"; [ -n "${PROJECT_NAME:-}" ] && PROJECT="$PROJECT_NAME"
+    C_REL="${C#$ROOT/}"; if [ "$p" = root ]; then UP_C_REL=""; UP_SLOT=""; else UP_SLOT="$(basename "$C")"; UP_C_REL="$(dirname "$(dirname "$C_REL")")"; fi
+    cp "$KIT"/templates/coordination/bin/*.sh "$C/bin/"; cp "$KIT"/templates/coordination/hooks/*.sh "$C/hooks/"
+    cp "$KIT/templates/coordination/LEAD.md" "$C/LEAD.md"; render "$C/LEAD.md"
+    [ -f "$KIT/LESSONS.md" ] && cp "$KIT/LESSONS.md" "$C/LESSONS.md"; [ -f "$KIT/TREE.md" ] && cp "$KIT/TREE.md" "$C/TREE.md"
+    mkdir -p "$C/prompts" && cp "$KIT"/prompts/*.md "$C/prompts/"
+    if [ -n "$UP_SLOT" ]; then rm -f -- "$C/prompts/lead-boot.md" "$C/prompts/lead-standby.md" "$C/prompts/lead-resume.md"; else rm -f -- "$C/prompts/node-boot.md" "$C/prompts/node-standby.md" "$C/prompts/node-resume.md"; fi
+    for f in "$C"/prompts/*.md; do render "$f"; done
+    chmod +x "$C"/bin/*.sh "$C"/hooks/*.sh
+    echo "updated $p ($C_REL): bin/, hooks/, prompts/, LEAD.md, LESSONS.md, TREE.md (PROTOCOL.md, cowork.conf, inbox/outbox/locks untouched)"
+  done
+}
+
+cmd_prompts() {
+  local TOPC d p="${1:-root}"
+  if TOPC="$(find_coord "${COWORK_PROJECT:-$PWD}")"; then ROOT="$(dirname "$TOPC")"; d="$(node_dir "$p")" || exit 1; d="$d/prompts"; else d="$KIT/prompts"; fi
+  for f in lead-boot node-boot seat-boot lead-standby node-standby lead-resume node-resume; do [ -f "$d/$f.md" ] || continue; echo "===== $f ($d) ====="; cat "$d/$f.md"; echo; done
+}
+
+[ $# -ge 1 ] || { usage; exit 1; }
+NODE=""; [ "$1" = "--node" ] && { NODE="$2"; shift 2; }
+case "$1" in
+  init) shift; cmd_init "$@";;
+  grow) shift; cmd_grow "$@";;
+  tree) cmd_tree;;
+  update) shift; cmd_update "$@";;
+  prompts) shift; cmd_prompts "$@";;
+  status|doctor|dispatch|report|claim|inbox|watch|lead-watch|lead|node)
+    c="$1"; shift; TOPC="$(find_coord "${COWORK_PROJECT:-$PWD}")" || die "no coordination/ found at or above ${COWORK_PROJECT:-$PWD} (set COWORK_PROJECT or cd into the project)"
+    ROOT="$(dirname "$TOPC")"; C="$(node_dir "${NODE:-root}")" || exit 1; [ -d "$C/bin" ] || die "node '${NODE:-root}' has no coordination dir ($C)"
+    exec bash "$C/bin/$c.sh" "$@";;
+  -h|--help|help) usage;;
+  *) die "unknown command: $1 (try --help)";;
+esac

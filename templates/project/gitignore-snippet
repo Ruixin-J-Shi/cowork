@@ -1,0 +1,10 @@
+
+# cowork: runtime coordination state stays out of history (at every depth of the tree)
+coordination/**/locks/*
+!coordination/**/locks/.gitkeep
+coordination/**/trash/*
+!coordination/**/trash/.gitkeep
+coordination/locks/*
+!coordination/locks/.gitkeep
+coordination/trash/*
+!coordination/trash/.gitkeep
