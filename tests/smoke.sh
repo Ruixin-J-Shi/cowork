@@ -23,6 +23,8 @@ check '[ -f "$P/PLAN.md" ] && [ -f "$P/CONVENTIONS.md" ]' "PLAN.md + CONVENTIONS
 check '"$KIT/cowork" init "$P" 2>&1 | grep -q "already exists"' "second init refuses"
 mkdir -p "$P/src" "$P/tests"; echo "x" > "$P/src/a.ts"; ( cd "$P" && git init -q . )
 B="$P/coordination/bin"
+bash "$B/inbox.sh" seat-2 --quiet 2>/dev/null
+check '[ ! -d "$P/coordination/locks/seat-2.lock" ]' "inbox.sh on an unclaimed seat creates no lock dir (the slot stays claimable)"
 
 echo "== claim"
 w1="$(bash "$B/claim.sh" --desc "session A")"; check '[ "$w1" = seat-1 ]' "first claim → seat-1"
@@ -102,6 +104,10 @@ mkdir -p "$P/my docs"; echo x > "$P/my docs/a.md"; touch -t "$old" "$P/my docs/a
 printf 'TERRITORY_1="src:my docs"\nTERRITORY_2="tests"\n' >> "$P/coordination/cowork.conf"
 check 'bash "$B/status.sh" | grep -q "seat-1"' "colon-separated territory with a space parses"
 check 'bash "$B/status.sh" | grep seat-2 | grep -q "DEAD?"' "with TERRITORY_2=tests, seat-2 is DEAD? despite seat-1 activity"
+echo fresh > "$P/tests/t.ts"
+rc=0; err="$(bash "$B/claim.sh" --takeover seat-2 --reason "x" 2>&1 >/dev/null)" || rc=$?
+check '[ $rc != 0 ] && echo "$err" | grep -q "territory"' "takeover refused while the slot's own territory is active (heads-down, not dead)"
+touch -t "$old" "$P/tests/t.ts"
 rc=0; bash "$B/claim.sh" --takeover seat-2 2>/dev/null >/dev/null || rc=$?; check '[ $rc != 0 ]' "takeover without --reason refused"
 mv "$P/coordination/outbox/seat-2.md" "$S/w2.bak"; rc=0; bash "$B/claim.sh" --takeover seat-2 --reason "x" >/dev/null 2>&1 || rc=$?; mv "$S/w2.bak" "$P/coordination/outbox/seat-2.md"; touch -t "$old" "$P/coordination/outbox/seat-2.md"
 check '[ $rc != 0 ]' "takeover refused when the outbox is missing (no evidence)"
@@ -199,6 +205,14 @@ check 'bash "$TB/doctor.sh" >/dev/null 2>&1' "fresh scaffold is healthy before t
 check 'bash "$NB/status.sh" | head -1 | grep -q "node seat-2"' "nested status.sh knows its node path"
 check 'bash "$NB/status.sh" | head -1 | grep -q "ROOT=$T\$"' "nested team resolves ROOT to the project root"
 mkdir -p "$T/src" "$T/tests"
+mkdir -p "$T/coordination/teams/seat-2/locks/lead.lock"   # simulate: this team already has a node
+rc=0; bash "$NB/node.sh" boot >/dev/null 2>&1 || rc=$?
+check '[ $rc = 2 ] && [ ! -d "$T/coordination/locks/seat-2.lock" ]' "node boot with the lead lock below held refuses before claiming anything above (got $rc)"
+mv "$T/coordination/teams/seat-2/locks/lead.lock" "$S/prehold.lock"
+if [ "$(id -u)" != 0 ]; then   # the residual race: the lead lock below cannot be taken after the slot above was — the claim above is released
+  chmod 555 "$T/coordination/teams/seat-2/locks"; rc=0; bash "$NB/node.sh" boot >/dev/null 2>&1 || rc=$?; chmod 755 "$T/coordination/teams/seat-2/locks"
+  check '[ $rc = 2 ] && [ ! -d "$T/coordination/locks/seat-2.lock" ] && ls "$T/coordination/trash" | grep -q "seat-2.lock.released" && grep -q "^## Claim released" "$T/coordination/outbox/seat-2.md"' "node boot that loses the lead lock below releases its claim above (moved to trash, announced)"
+fi
 bash "$TB/dispatch.sh" seat-2 "T0 — landed before the node booted" -m "x" >/dev/null
 out="$(bash "$NB/node.sh" boot --desc "node B")"; rc=$?
 check '[ $rc = 0 ] && echo "$out" | grep -q "above: claimed seat-2"' "node.sh boot claims its fixed slot above"
@@ -238,6 +252,7 @@ check 'bash "$NB/doctor.sh" >/dev/null 2>&1' "nested doctor healthy"
 check 'bash "$TB/doctor.sh" | grep -q "team below: seat-2"' "top doctor lists teams below"
 ( cd "$T" && "$KIT/cowork" grow seat-1/seat-1 --seats 3 >/dev/null ); rc=$?
 check '[ $rc = 0 ] && [ -f "$T/coordination/teams/seat-1/teams/seat-1/inbox/seat-3.md" ]' "cowork grow adds a third layer under a leaf"
+check 'grep -q "^TERRITORIES=\"src:tests\"" "$T/coordination/teams/seat-1/teams/seat-1/cowork.conf"' "grow seeds the new team's TERRITORIES from its parent's"
 check '( cd "$T" && "$KIT/cowork" tree | grep -q "^    seat-1/seat-1  \[" )' "cowork tree prints the third layer"
 check 'bash "$T/coordination/teams/seat-1/teams/seat-1/bin/status.sh" | head -1 | grep -q "node seat-1/seat-1"' "depth-3 node path"
 rc=0; ( cd "$T" && "$KIT/cowork" grow seat-1/seat-9 >/dev/null 2>&1 ) || rc=$?; check '[ $rc != 0 ]' "grow refuses a slot the parent does not have"
@@ -246,10 +261,20 @@ mkdir -p "$T/coordination/teams/seat-1-backup"; check '( cd "$T" && "$KIT/cowork
 cp -R "$T/coordination/teams/seat-1/teams/seat-1" "$T/coordination/teams/seat-1/teams/seat-7" 2>/dev/null
 check 'bash "$T/coordination/teams/seat-1/bin/doctor.sh" | grep -q "orphaned team"' "doctor warns about an orphaned teams/seat-7"
 check 'bash "$T/coordination/teams/seat-1/bin/doctor.sh" | grep -q "identical to its parent"' "doctor warns when a nested TERRITORIES equals the parent's"
+NP="$T/coordination/teams/seat-1/prompts/node-boot.md"; cp "$NP" "$S/nb.bak"; printf '@@UNRENDERED@@\n' >> "$NP"
+rc=0; bash "$T/coordination/teams/seat-1/bin/doctor.sh" > "$S/nd.out" 2>&1 || rc=$?; mv "$S/nb.bak" "$NP"
+check '[ $rc = 1 ] && grep -q "prompts/node-boot.md still contains unrendered" "$S/nd.out"' "nested doctor FAILs on an unrendered placeholder in its node-boot.md (got $rc)"
 # node takeover in one command: kill the node's evidence, then boot --takeover from a 'new session'
 oldt="$(date -v-3H '+%Y%m%d%H%M' 2>/dev/null || date -d '3 hours ago' '+%Y%m%d%H%M')"
 touch -t "$oldt" "$T/coordination/outbox/seat-2.md" "$T/coordination/teams/seat-2/lead-log.md"; find "$T/coordination/teams/seat-2/inbox" -name '*.md' -exec touch -t "$oldt" {} \;
 bash "$T/coordination/teams/seat-2/bin/report.sh" seat-1 NOTE "waiting" -m "x" >/dev/null
+if [ "$(id -u)" != 0 ]; then   # takeover path: slot above taken over, then the free lead lock below cannot be claimed — the takeover above is released too
+  mv "$T/coordination/teams/seat-2/locks/lead.lock" "$S/dead-lead.lock"; chmod 555 "$T/coordination/teams/seat-2/locks"
+  rc=0; bash "$NB/node.sh" boot --takeover --reason "node silent 3h" >/dev/null 2>&1 || rc=$?
+  chmod 755 "$T/coordination/teams/seat-2/locks"; mv "$S/dead-lead.lock" "$T/coordination/teams/seat-2/locks/lead.lock"
+  check '[ $rc != 0 ] && [ ! -d "$T/coordination/locks/seat-2.lock/takeover-1.lock" ] && ls "$T/coordination/trash" | grep -q "seat-2.takeover-1.lock.released" && grep -q "^## Takeover released" "$T/coordination/outbox/seat-2.md"' "node boot --takeover that cannot take the lead lock below releases its takeover above (moved to trash, announced)"
+  touch -t "$oldt" "$T/coordination/outbox/seat-2.md"
+fi
 out="$(bash "$NB/node.sh" boot --takeover --reason "node silent 3h, work waiting" --desc "successor")"; rc=$?
 check '[ $rc = 0 ] && echo "$out" | grep -q "took over seat-2" && echo "$out" | grep -q "took over the lead lock"' "node.sh boot --takeover takes the slot above then the lead lock below"
 check '[ -d "$T/coordination/locks/seat-2.lock/takeover-1.lock" ] && [ -d "$T/coordination/teams/seat-2/locks/lead.lock/takeover-1.lock" ]' "both takeover locks exist"
@@ -272,6 +297,35 @@ rc=0; "$KIT/cowork" init "$S/escape" --territories ".." >/dev/null 2>&1 || rc=$?
 check 'grep -q "# local edit" "$P/coordination/PROTOCOL.md"' "cowork update leaves PROTOCOL.md alone"
 check '[ -f "$P/coordination/LESSONS.md" ] || [ ! -f "$KIT/LESSONS.md" ]' "cowork update copies LESSONS.md when the kit has it"
 check 'bash "$B/doctor.sh" >/dev/null 2>&1' "doctor still healthy after update"
+echo "== regressions: CLI guards, territory parsing, doctor probes"
+if [ "$(id -u)" != 0 ]; then
+  mkdir -p "$S/ro"; chmod 555 "$S/ro"; rc=0; out="$("$KIT/cowork" init "$S/ro/proj" 2>&1)" || rc=$?; chmod 755 "$S/ro"
+  check '[ $rc != 0 ] && echo "$out" | grep -q "cannot create" && ! echo "$out" | grep -q "/coordination" && [ ! -e "$S/ro/proj" ]' "init dies at the failed mkdir — never falls through to an empty ROOT and touches /coordination"
+  mkdir -p "$S/ro2"; chmod 555 "$S/ro2"; rc=0; out="$("$KIT/cowork" init "$S/ro2" 2>&1)" || rc=$?; chmod 755 "$S/ro2"
+  check '[ $rc != 0 ] && echo "$out" | grep -q "nothing usable was scaffolded" && ! echo "$out" | grep -q "^next:"' "init dies at the failed template copy, naming it, with no success banner"
+fi
+check '"$KIT/cowork" init "$S/yes" --seats 1 --yes >/dev/null 2>&1' "init accepts --yes (compatibility; nothing prompts)"
+check '[ "$(cd "$P/src" && . "$B/common.sh" && territory_list "src *.ts" | wc -l | tr -d " ")" = 2 ]' "territory_list never glob-expands a space-separated entry against the cwd"
+mv "$P/coordination/PROTOCOL.md" "$S/proto.bak"; bash "$B/doctor.sh" > "$S/doctor2.out" 2>&1; rc=$?; mv "$S/proto.bak" "$P/coordination/PROTOCOL.md"
+check '[ $rc = 1 ] && [ "$(grep -c "  FAIL" "$S/doctor2.out")" = 1 ] && grep -q "stat works" "$S/doctor2.out"' "doctor: a missing PROTOCOL.md is one FAIL, and the stat probe still passes"
+
+echo "== takeover gate: dead by evidence needs all three facts"
+G="$S/gate"; "$KIT/cowork" init "$G" --seats 1 --territories "src" >/dev/null; GB="$G/coordination/bin"
+mkdir -p "$G/src"; echo x > "$G/src/a.ts"; printf 'TERRITORY_1="src"\n' >> "$G/coordination/cowork.conf"
+bash "$GB/claim.sh" --desc "gate" >/dev/null
+touch -t "$old" "$G/coordination/outbox/seat-1.md" "$G/src/a.ts"
+rc=0; err="$(bash "$GB/claim.sh" --takeover seat-1 --reason x 2>&1 >/dev/null)" || rc=$?
+check '[ $rc != 0 ] && echo "$err" | grep -q "no open task"' "stale outbox but nothing open: refused (idle is not dead)"
+bash "$GB/dispatch.sh" seat-1 "T1 — work" -m "x" >/dev/null; echo y > "$G/src/b.ts"
+rc=0; err="$(bash "$GB/claim.sh" --takeover seat-1 --reason x 2>&1 >/dev/null)" || rc=$?
+check '[ $rc != 0 ] && echo "$err" | grep -q "territory"' "stale outbox and open task but territory active: refused (heads-down)"
+touch -t "$old" "$G/src/b.ts"
+check '[ "$(bash "$GB/claim.sh" --takeover seat-1 --reason "all three facts")" = seat-1 ]' "stale outbox, silent territory, open task: takeover allowed"
+rc=0; bash "$GB/claim.sh" --takeover seat-1 --reason x >/dev/null 2>&1 || rc=$?; check '[ $rc != 0 ]' "fresh outbox after the takeover: refused again"
+check '[ "$(bash "$GB/claim.sh" --takeover seat-1 --reason "human says so" --force)" = seat-1 ]' "--force overrides the gate"
+bash "$GB/report.sh" seat-1 T1 DONE -m "done" >/dev/null; bash "$GB/dispatch.sh" seat-1 --status DISMISSED >/dev/null
+touch -t "$old" "$G/coordination/outbox/seat-1.md"
+check '[ "$(bash "$GB/claim.sh" --takeover seat-1 --reason "re-staffing a dismissed slot")" = seat-1 ]' "a DISMISSED slot with a stale outbox can be re-staffed without --force"
 echo
 echo "$pass passed, $failn failed  (scratch: $S)"
 [ "$failn" = 0 ]

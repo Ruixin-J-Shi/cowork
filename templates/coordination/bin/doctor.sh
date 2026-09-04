@@ -18,7 +18,7 @@ for d in locks trash inbox outbox; do [ -f "$COORD/$d/.gitkeep" ] || warn "coord
 [ -f "$COORD/LEAD.md" ] && ok "LEAD.md" || warn "coordination/LEAD.md missing — lead playbook"
 [ -f "$COORD/registry.md" ] && ok "registry.md" || warn "registry.md missing (claim.sh creates it)"
 [ -f "$COORD/cowork.conf" ] && ok "cowork.conf (SEATS=$SEATS, HEARTBEAT_MIN=$HEARTBEAT_MIN, DEAD_MIN=$DEAD_MIN, STALL_MIN=$STALL_MIN)" || warn "cowork.conf missing — defaults in use"
-[ "$(mtime "$COORD/PROTOCOL.md")" != 0 ] && ok "stat works (mtime probing)" || fail "stat could not read an mtime — watch scripts will not work"
+[ "$(mtime "$COORD/bin/common.sh")" != 0 ] && ok "stat works (mtime probing)" || fail "stat could not read an mtime — watch scripts will not work"
 if [ -z "$TERRITORIES" ]; then warn "TERRITORIES empty — stall detection only sees outboxes; set it in cowork.conf"; else
   while IFS= read -r p; do [ -n "$p" ] || continue
     if ! inside_root "$p"; then fail "territory '$p' resolves outside the project root — liveness ignores it; fix cowork.conf"
@@ -32,7 +32,10 @@ if [ "$SEATS" -gt 1 ]; then
   [ -n "$missing" ] && warn "no TERRITORY_N in cowork.conf for seat(s)$missing — a dead seat there can hide behind a busy sibling; mirror PLAN.md's ownership map"
 fi
 grep -qE '^## ' "$COORD/PROTOCOL.md" 2>/dev/null && grep -q 'STATUS: DISMISSED' "$COORD/PROTOCOL.md" 2>/dev/null || warn "PROTOCOL.md does not mention STATUS: DISMISSED — seats would never know how to end"
-for f in PROTOCOL.md LEAD.md cowork.conf prompts/seat-boot.md prompts/lead-boot.md; do grep -q '@@' "$COORD/$f" 2>/dev/null && fail "$f still contains unrendered @@PLACEHOLDERS@@"; done
+for f in PROTOCOL.md LEAD.md cowork.conf registry.md PLAN.md "$COORD"/prompts/*.md; do   # every rendered file this node has (prompts differ by depth)
+  case "$f" in /*) p="$f"; f="${f#$COORD/}";; *) p="$COORD/$f";; esac
+  [ -f "$p" ] || continue; grep -q '@@' "$p" && fail "$f still contains unrendered @@PLACEHOLDERS@@"
+done
 
 echo "lead"
 info "node $(node_path) · dir $C_REL · root $ROOT${PROJECT_ROOT_REL:+ (PROJECT_ROOT_REL=$PROJECT_ROOT_REL)}"

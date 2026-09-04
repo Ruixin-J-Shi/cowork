@@ -9,7 +9,8 @@
 #       Claim exactly that slot (a node's slot above is fixed by its team dir). Exit 2 with evidence if held.
 #   claim.sh --takeover seat-N --reason "<evidence>" [--force] [--desc "..."]
 #       Dead-session recovery: nested atomic mkdir inside the stale lock — first taker wins.
-#       Refuses when the slot's outbox was written within DEAD_MIN minutes unless --force.
+#       Refuses unless the slot is dead by evidence — outbox stale >= DEAD_MIN AND its territory silent AND an open
+#       task (a STATUS: DISMISSED slot needs only the stale outbox): the three facts status.sh reports. --force overrides.
 #       After a takeover you MUST audit the predecessor's on-disk work before continuing it.
 . "$(dirname "$0")/common.sh"
 DESC="Claude Code seat session"; TAKEOVER=""; REASON=""; FORCE=""; SLOT=""
@@ -31,9 +32,14 @@ if [ -n "$TAKEOVER" ]; then
   L="$(lockdir "$TAKEOVER")"
   [ -d "$L" ] || die "$TAKEOVER is not locked — claim it normally"
   oa="$(age_min "$(outbox "$TAKEOVER")")"
-  if [ -z "$FORCE" ] && { [ "$oa" = "-" ] || [ "$oa" -lt "$DEAD_MIN" ]; }; then
-    if [ "$oa" = "-" ]; then die "$TAKEOVER has no outbox on disk — no evidence it is dead (it may be initialising). Re-check status.sh, or --force with stronger evidence."; fi
-    die "$TAKEOVER wrote its outbox ${oa}m ago (< DEAD_MIN=$DEAD_MIN). It may be alive. Re-check status.sh, or --force if you have stronger evidence."
+  if [ -z "$FORCE" ]; then   # the same three facts liveness() reports: stale outbox, silent territory, open work
+    [ "$oa" = "-" ] && die "$TAKEOVER has no outbox on disk — no evidence it is dead (it may be initialising). Re-check status.sh, or --force with stronger evidence."
+    [ "$oa" -lt "$DEAD_MIN" ] && die "$TAKEOVER wrote its outbox ${oa}m ago (< DEAD_MIN=$DEAD_MIN). It may be alive. Re-check status.sh, or --force if you have stronger evidence."
+    if [ "$(inbox_status "$TAKEOVER")" != DISMISSED ]; then
+      ta="$(slot_territory_age_min "$TAKEOVER")"; open="$(open_tasks "$TAKEOVER")"
+      [ "$ta" != "-" ] && [ "$ta" -le "$HEARTBEAT_MIN" ] && die "$TAKEOVER's territory was written ${ta}m ago — heads-down, not dead (status.sh says nudge). Re-check, or --force with stronger evidence."
+      [ "$open" = "-" ] && die "$TAKEOVER has no open task — idle, not dead by evidence (outbox ${oa}m). Ask the lead to dispatch to it or dismiss it, or --force with stronger evidence."
+    fi
   fi
   gen="$(ls -d "$L"/takeover-*.lock 2>/dev/null | wc -l | tr -d ' ')"
   T="$L/takeover-$((gen + 1)).lock"

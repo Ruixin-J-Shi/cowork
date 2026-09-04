@@ -10,7 +10,7 @@ Clone the kit anywhere; nothing in it depends on where it lives.
 git clone https://github.com/Ruixin-J-Shi/cowork.git && cd cowork
 ln -s "$PWD/cowork" /usr/local/bin/cowork     # or any directory on your PATH
 ln -s "$PWD/skill" ~/.claude/skills/cowork    # enables /cowork in Claude Code
-bash tests/smoke.sh                           # 144 checks; proves the scripts work here
+bash tests/smoke.sh                           # 162 checks; proves the scripts work here
 ```
 
 Phone notifications (optional): `brew install ntfy`, then follow the header of

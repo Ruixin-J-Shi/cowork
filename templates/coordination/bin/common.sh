@@ -76,8 +76,9 @@ outbox() { echo "$COORD/outbox/$1.md"; }
 lockdir(){ echo "$COORD/locks/$1.lock"; }
 
 # Territory lists are colon-separated (PATH-style; a path may then contain spaces); whitespace also separates
-# when no colon is present. One entry per output line.
-territory_list() { local s="${1:-}"; case "$s" in '') ;; *:*) printf '%s\n' "$s" | tr ':' '\n';; *) printf '%s\n' $s;; esac; }
+# when no colon is present. One entry per output line; entries are never glob-expanded (an unquoted $s would
+# expand "*.ts" against the caller's cwd).
+territory_list() { local s="${1:-}"; case "$s" in '') ;; *:*) printf '%s\n' "$s" | tr ':' '\n';; *) printf '%s\n' "$s" | tr -s ' \t' '\n';; esac; }
 # A territory must resolve inside the project root; anything else is ignored by liveness and flagged by doctor.
 inside_root() { local rp; [ -e "$ROOT/$1" ] || return 0; rp="$(cd "$ROOT/$1" 2>/dev/null && pwd -P)" || return 1; case "$rp" in "$ROOT_P"|"$ROOT_P"/*) return 0;; *) return 1;; esac; }
 

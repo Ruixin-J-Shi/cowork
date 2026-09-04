@@ -37,7 +37,7 @@ That worker proposed the rule the kit now carries: *"a worker with no outbox ent
 appends a one-line heartbeat — cheap, and it makes 'unresponsive' mean something checkable."* And the
 master's standard for the other direction — **dead by the evidence standard** — is three facts together:
 outbox stale past the window, territory silent, open task unacknowledged. `status.sh` computes all
-three; `claim.sh --takeover` refuses a slot whose outbox is fresh.
+three; `claim.sh --takeover` refuses a slot that fails any of them.
 
 Nudge wording that worked: *"No outbox entry or territory activity for N min while T<id> is in progress.
 One line if alive; if blocked, on what; if your session died, the takeover protocol covers the successor."*
